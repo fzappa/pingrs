@@ -1,0 +1,11 @@
+[package]
+name = "pingrs_noroot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+socket2 = "0.6"
+libc = "0.2"
+ctrlc = "3.4"
+
