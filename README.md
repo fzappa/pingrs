@@ -98,15 +98,32 @@ if !running.load(Ordering::SeqCst) { break; }
 
 ## How to Run
 
-Since this project uses Raw Sockets, you **MUST** run the terminal as **Administrator** (on Windows).
+Since this project uses Raw Sockets, it requires elevated privileges to create the socket.
 
-1.  Open the terminal (PowerShell or CMD) as Administrator.
-2.  Compile and run:
+### Windows
+You **MUST** run the terminal as **Administrator**.
 
+1.  Open PowerShell or CMD as Administrator.
+2.  Run:
+    ```bash
+    cargo run -- 8.8.8.8
+    ```
+
+### Linux
+You have two options:
+
+**Option 1: Run with `sudo` (Easiest)**
 ```bash
-# Infinite ping
-cargo run -- 8.8.8.8
+sudo cargo run -- 8.8.8.8
+```
 
-# Send only 4 pings
-cargo run -- 8.8.8.8 -c 4
+**Option 2: Grant Capabilities (Advanced)**
+You can grant the `CAP_NET_RAW` capability to the binary to run without `sudo`.
+```bash
+# Build first
+cargo build --release
+# Grant capability
+sudo setcap cap_net_raw+ep target/release/pingrs
+# Run normally
+./target/release/pingrs 8.8.8.8
 ```

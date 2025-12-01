@@ -34,16 +34,20 @@ fn main() -> Result<()> {
     .context("Erro ao configurar handler de Ctrl+C")?;
 
     // Cria um socket ICMP RAW
-    // Domain::IPV4 -> AF_INET
-    // Type::RAW -> SOCK_RAW (Necessário no Windows para ICMP)
-    // Protocol::ICMPV4 -> IPPROTO_ICMP
-    // Nota: SOCK_RAW é 3. Usamos o valor direto pois libc::SOCK_RAW pode não estar disponível no Windows.
-    let mut sock = Socket::new(
-        Domain::IPV4,
-        Type::from(3),
-        Some(Protocol::ICMPV4),
-    )
-    .context("Falha ao criar socket RAW. Verifique se está rodando como Administrador.")?;
+    // Tenta criar um socket DGRAM (ICMP sem root em Linux configurado)
+    // Se falhar, tenta RAW (requer root/admin)
+    let (mut sock, is_raw) = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)) {
+        Ok(s) => {
+            println!("Modo: Unprivileged (DGRAM)");
+            (s, false)
+        }
+        Err(_) => {
+            let s = Socket::new(Domain::IPV4, Type::from(3), Some(Protocol::ICMPV4))
+                .context("Falha ao criar socket (DGRAM ou RAW). Verifique permissões.")?;
+            println!("Modo: Raw Socket (requer Admin/Root)");
+            (s, true)
+        }
+    };
 
     // Timeout de leitura de 2s
     sock.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -55,7 +59,7 @@ fn main() -> Result<()> {
     let ident: u16 = std::process::id() as u16;
 
     // Payload enviado dentro do pacote ICMP
-    let payload = b"pingrs-windows";
+    let payload = b"pingrs";
 
     println!("Disparando {} com {} bytes de dados:", dst, payload.len());
 
@@ -119,16 +123,28 @@ fn main() -> Result<()> {
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
                         continue;
                     }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                        // Chamada interrompida (ex: Ctrl+C), verifica flag e continua ou sai
+                        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+                            break;
+                        }
+                        continue;
+                    }
                     Err(e) => {
                         println!("Erro na leitura: {}", e);
                         break;
                     }
                 };
 
-                // Alguns SOs podem incluir o cabeçalho IP no início; detecta IPv4 e pula IHL se for o caso
-                let start = if n >= 20 && (buf[0] >> 4) == 4 {
-                    let ihl = (buf[0] & 0x0F) as usize * 4;
-                    ihl
+                // Se for RAW socket, o cabeçalho IP está presente (geralmente 20 bytes).
+                // Se for DGRAM, o kernel remove o cabeçalho IP.
+                let start = if is_raw {
+                    if n >= 20 && (buf[0] >> 4) == 4 {
+                        let ihl = (buf[0] & 0x0F) as usize * 4;
+                        ihl
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 };
@@ -141,7 +157,11 @@ fn main() -> Result<()> {
                 let r_id = u16::from_be_bytes([icmp[4], icmp[5]]);
                 let r_seq = u16::from_be_bytes([icmp[6], icmp[7]]);
 
-                if icmp_type == 0 && icmp_code == 0 && r_id == ident && r_seq == seq {
+                // Verifica ID apenas se for RAW socket.
+                // Em DGRAM, o kernel define o ID e filtra as respostas para nós, então o ID retornado pode não bater com o nosso.
+                let id_match = if is_raw { r_id == ident } else { true };
+
+                if icmp_type == 0 && icmp_code == 0 && id_match && r_seq == seq {
                     let rtt_ms = t0.elapsed().as_secs_f64() * 1000.0;
                     println!(
                         "Resposta de {}: bytes={} icmp_seq={} tempo={:.2}ms",
